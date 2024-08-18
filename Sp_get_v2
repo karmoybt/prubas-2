@@ -1,0 +1,164 @@
+USE [MiTest]
+GO
+/****** Object:  StoredProcedure [dbo].[sp_GET_V2]    Script Date: 18/08/2024 17:37:34 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[sp_GET_V2]
+    @TableName NVARCHAR(255)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @SQL NVARCHAR(MAX);
+    DECLARE @SpNombre NVARCHAR(255);
+    DECLARE @SPInfo NVARCHAR(355);
+    DECLARE @Now DATETIME = GETDATE();
+
+    DECLARE @ListaColumnas NVARCHAR(MAX) = '';
+    DECLARE @Params NVARCHAR(MAX) = '';
+    DECLARE @WhereFiltro NVARCHAR(MAX) = '';
+    DECLARE @JoinClause NVARCHAR(MAX) = '';
+    DECLARE @FKTable NVARCHAR(255);
+    DECLARE @FKColumn NVARCHAR(255);
+    DECLARE @ReferencedTable NVARCHAR(MAx);
+    DECLARE @ReferencedColumn NVARCHAR(MAX);
+
+    DECLARE @Espaciado varchar(20) = '         ';
+
+    -- Nombre del SP
+    SET @SpNombre = 'SP_' + @TableName + '_GET_V2';
+    SET @SPInfo = '-- SP: ' + @SpNombre + CHAR(10) + '-- Hora Creacion: ' + CONVERT(NVARCHAR(30), @Now) + CHAR(10);
+
+    -- Obtener columnas y sus tipos de datos de la tabla
+    DECLARE @CursorColumnas CURSOR;
+    DECLARE @NobreColumna NVARCHAR(255);
+    DECLARE @TipoDatos NVARCHAR(255);
+
+    SET @CursorColumnas = CURSOR FOR
+        SELECT C.COLUMN_NAME, C.DATA_TYPE
+        FROM INFORMATION_SCHEMA.COLUMNS C
+        WHERE C.TABLE_NAME = @TableName
+        ORDER BY C.ORDINAL_POSITION;
+
+    OPEN @CursorColumnas;
+    FETCH NEXT FROM @CursorColumnas INTO @NobreColumna, @TipoDatos;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        -- Añadir la columna a la lista de selección
+        SET @ListaColumnas = @ListaColumnas + @Espaciado + '[' + @TableName + '].[' + @NobreColumna + '], ' + CHAR(10);
+
+        -- Añadir el parámetro y la condición a los filtros según el tipo de dato
+        IF @TipoDatos IN ('nvarchar', 'varchar', 'nchar', 'char', 'text', 'ntext')
+        BEGIN
+            SET @Params = @Params + @Espaciado + '@' + @NobreColumna + ' NVARCHAR(255) = NULL, '+char(10);
+            SET @WhereFiltro = @WhereFiltro + @Espaciado + '(@' + @NobreColumna + ' IS NULL OR [' + @TableName + '].[' + @NobreColumna + '] LIKE ''%'' + @' + @NobreColumna + ' + ''%'') AND '+char(10);
+        END
+        ELSE IF @TipoDatos IN ('int', 'bigint', 'smallint', 'tinyint', 'float', 'decimal', 'numeric', 'real', 'money', 'smallmoney')
+        BEGIN
+            SET @Params = @Params + @Espaciado + '@' + @NobreColumna + ' ' + @TipoDatos + ' = NULL, '+char(10);
+            SET @WhereFiltro = @WhereFiltro + @Espaciado + '(@' + @NobreColumna + ' IS NULL OR [' + @TableName + '].[' + @NobreColumna + '] = @' + @NobreColumna + ') AND '+char(10);
+        END
+        ELSE IF @TipoDatos IN ('date', 'datetime', 'smalldatetime', 'datetime2', 'time')
+        BEGIN
+            SET @Params = @Params + @Espaciado + '@' + @NobreColumna + ' ' + @TipoDatos + ' = NULL, '+char(10);
+            SET @WhereFiltro = @WhereFiltro + @Espaciado + '(@' + @NobreColumna + ' IS NULL OR [' + @TableName + '].[' + @NobreColumna + '] = @' + @NobreColumna + ') AND '+char(10);
+        END
+        ELSE IF @TipoDatos = 'bit'
+        BEGIN
+            SET @Params = @Params + @Espaciado + '@' + @NobreColumna + ' BIT = NULL, '+char(10);
+            SET @WhereFiltro = @WhereFiltro + @Espaciado + '(@' + @NobreColumna + ' IS NULL OR [' + @TableName + '].[' + @NobreColumna + '] = @' + @NobreColumna + ') AND '+char(10);
+        END
+        ELSE
+        BEGIN
+            SET @Params = @Params + @Espaciado + '@' + @NobreColumna + ' NVARCHAR(255) = NULL, '+char(10);
+            SET @WhereFiltro = @WhereFiltro + @Espaciado + '(@' + @NobreColumna + ' IS NULL OR [' + @TableName + '].[' + @NobreColumna + '] LIKE ''%'' + @' + @NobreColumna + ' + ''%'') AND '+char(10);
+        END
+
+        FETCH NEXT FROM @CursorColumnas INTO @NobreColumna, @TipoDatos;
+    END;
+
+    CLOSE @CursorColumnas;
+    DEALLOCATE @CursorColumnas;
+
+    -- Eliminar la última coma y espacio sobrante
+    SET @Params = LEFT(@Params, LEN(@Params) - 3);
+    SET @WhereFiltro = LEFT(@WhereFiltro, LEN(@WhereFiltro) - 5);
+    --SET @ListaColumnas = LEFT(@ListaColumnas, LEN(@ListaColumnas) - 1);
+
+    -- Buscar claves foráneas y construir los JOIN
+    DECLARE @CursorFK CURSOR;
+    SET @CursorFK = CURSOR FOR
+        SELECT 
+            FK.TABLE_NAME AS FKTable,
+            FK.COLUMN_NAME AS FKColumn,
+            PK.TABLE_NAME AS ReferencedTable,
+            PK.COLUMN_NAME AS ReferencedColumn
+        FROM 
+            INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS RC
+        INNER JOIN 
+            INFORMATION_SCHEMA.KEY_COLUMN_USAGE FK ON RC.CONSTRAINT_NAME = FK.CONSTRAINT_NAME
+        INNER JOIN 
+            INFORMATION_SCHEMA.KEY_COLUMN_USAGE PK ON RC.UNIQUE_CONSTRAINT_NAME = PK.CONSTRAINT_NAME
+        WHERE 
+            FK.TABLE_NAME = @TableName;
+
+    OPEN @CursorFK;
+    FETCH NEXT FROM @CursorFK INTO @FKTable, @FKColumn, @ReferencedTable, @ReferencedColumn;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        -- Añadir el JOIN con la tabla relacionada
+        SET @JoinClause = @JoinClause + ' LEFT JOIN [' + @ReferencedTable + '] ON [' + @TableName + '].[' + @FKColumn + '] = [' + @ReferencedTable + '].[' + @ReferencedColumn + ']' + CHAR(10);
+
+        -- Añadir las columnas de la tabla relacionada
+        DECLARE @CursorRelatedColumns CURSOR;
+        DECLARE @RelatedColumn NVARCHAR(max);
+        SET @CursorRelatedColumns = CURSOR FOR
+            SELECT COLUMN_NAME 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_NAME = @ReferencedTable;
+
+        OPEN @CursorRelatedColumns;
+        FETCH NEXT FROM @CursorRelatedColumns INTO @RelatedColumn;
+
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            SET @ListaColumnas = @ListaColumnas + @Espaciado + '[' + @ReferencedTable + '].[' + @RelatedColumn + '], ' + CHAR(10);
+            FETCH NEXT FROM @CursorRelatedColumns INTO @RelatedColumn;
+        END;
+
+        CLOSE @CursorRelatedColumns;
+        DEALLOCATE @CursorRelatedColumns;
+
+        FETCH NEXT FROM @CursorFK INTO @FKTable, @FKColumn, @ReferencedTable, @ReferencedColumn;
+    END;
+
+    CLOSE @CursorFK;
+    DEALLOCATE @CursorFK;
+
+    -- Eliminar la última coma y espacio sobrante
+    SET @ListaColumnas = LEFT(@ListaColumnas, LEN(@ListaColumnas) - 3);
+
+    -- SP Final
+    SET @SQL = @SPInfo + 
+               'CREATE PROCEDURE ' + @SpNombre + CHAR(10) + 
+               '(' + CHAR(10) + @Params + CHAR(10) + ')' + CHAR(10) + 
+               'AS' + CHAR(10) + 
+               'BEGIN' + CHAR(10) + 
+               '    SET NOCOUNT ON;' + CHAR(10) + 
+               '    SELECT ' + CHAR(10) + @ListaColumnas + CHAR(10) + 
+               '    FROM [' + @TableName + ']' + CHAR(10) + 
+               @JoinClause + 
+               '    WHERE ' + CHAR(10) + @WhereFiltro + CHAR(10) + 
+               '    ORDER BY 1;' + CHAR(10) + 
+               'END';
+
+    -- Imprimir el SQL generado para depuración
+    PRINT @SQL;
+
+    -- Ejecutar el script dinámico para crear el procedimiento almacenado
+    EXEC sp_executesql @SQL;
+END;
